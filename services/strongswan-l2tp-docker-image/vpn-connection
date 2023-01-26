@@ -1,0 +1,50 @@
+#!/bin/bash
+: ${PING:=true}
+
+function restartVPN {
+	
+	if ip address | grep -q ': ppp'; then
+		echo deleting ppp interface
+		ip route delete $SERVER_IP
+		ip route delete $VPN_SUBNET
+	fi
+
+	echo "d vpn" > /var/run/xl2tpd/l2tp-control
+	if [[ "${PSK}" != "noPSK" ]]; then ipsec down vpn; fi
+
+	echo establishing VPN tunnel
+
+	mkdir -p /var/run/xl2tpd
+	touch /var/run/xl2tpd/l2tp-control
+
+	service xl2tpd restart
+	if [[ "${PSK}" != "noPSK" ]]; then 
+		service ipsec restart 
+		ipsec up vpn
+	fi	
+	sleep 3
+	echo "c vpn" > /var/run/xl2tpd/l2tp-control
+	sleep 2
+	GATEWAY=$(ip route show default | awk '/default/ {print $3}')
+	DEFAULT_NETWORK_INTERFACE=$(ip route show default | cut -d' ' -f5)
+	ip route add $SERVER_IP via $GATEWAY dev $DEFAULT_NETWORK_INTERFACE
+
+	PPP_NETWORK_INTERFACE=$(ip address | grep -oE '^[0-9]+: ppp\w+' | cut -d' ' -f2)
+	SUBNET_GATEWAY=$(ip address show $PPP_NETWORK_INTERFACE | grep -oE 'peer [0-9.]+' | cut -d' ' -f2)
+	ip route add $VPN_SUBNET via $SUBNET_GATEWAY dev $PPP_NETWORK_INTERFACE
+}
+
+/etc/init.d/rinetd restart
+
+while true; do
+    # This method was from https://github.com/thegitfather/docker-debian-ike/blob/master/startup.sh
+	if ping -c 1 $TARGET_IP &> /dev/null
+	then
+		echo vpn connected
+		sleep 60
+	else
+		echo vpn disconnected
+		restartVPN
+		sleep 30
+	fi
+done
